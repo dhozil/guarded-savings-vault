@@ -6,7 +6,9 @@ from datetime import datetime, timedelta
 
 from genlayer import *
 
-MAX_VAULTS = 100
+# No contract-wide vault cap: a fixed global capacity would let a single
+# untrusted caller exhaust it with free zero-value creations. Vault ids come
+# from an unbounded monotonic counter instead.
 MAX_RULES_CHARS = 2000
 MAX_JUSTIFICATION_CHARS = 2000
 MAX_URL_CHARS = 500
@@ -21,6 +23,7 @@ COOLDOWN_DAYS = 7
 VETO_REREQUEST_DAYS = 7
 VETO_OVERRIDE_DAYS = 30
 DENIAL_OVERRIDE_DAYS = 30
+DENY_FALLBACK_REASONING = "Denied by rules check."
 
 
 @allow_storage
@@ -172,8 +175,6 @@ class GuardedSavingsVault(gl.Contract):
         guardian = Address(guardian_address.strip()).as_hex
         if guardian == owner:
             raise gl.vm.UserError("Guardian must differ from owner")
-        if int(self.next_vault_id) >= MAX_VAULTS:
-            raise gl.vm.UserError("Vault limit reached")
 
         vault_id = f"v{int(self.next_vault_id)}"
         self.next_vault_id = u256(int(self.next_vault_id) + 1)
@@ -266,9 +267,12 @@ class GuardedSavingsVault(gl.Contract):
             decision = str(raw.get("decision", "")).lower() if raw else ""
             if decision not in ("approve", "deny"):
                 decision = "deny"
-            reasoning = str(raw.get("reasoning", ""))[:MAX_REASONING_CHARS] if raw else ""
+            reasoning_raw = raw.get("reasoning") if raw else None
+            if not isinstance(reasoning_raw, str):
+                reasoning_raw = ""
+            reasoning = reasoning_raw.strip()[:MAX_REASONING_CHARS]
             if decision == "deny" and not reasoning:
-                reasoning = "Denied by rules check."
+                reasoning = DENY_FALLBACK_REASONING
             return {"decision": decision, "reasoning": reasoning}
 
         def validator_fn(leader_result) -> bool:
@@ -279,15 +283,28 @@ class GuardedSavingsVault(gl.Contract):
                 return False
             if ld.get("decision") not in ("approve", "deny"):
                 return False
+            if ld["decision"] == "deny":
+                # the deny branch commits the leader's reasoning to storage:
+                # it must be a non-empty, length-bounded string
+                lr = ld.get("reasoning")
+                if not isinstance(lr, str) or not lr.strip():
+                    return False
+                if len(lr) > MAX_REASONING_CHARS:
+                    return False
             my = eval_fn()
             return my["decision"] == ld["decision"]
 
         result = gl.vm.run_nondet_unsafe(eval_fn, validator_fn)
 
         if result["decision"] == "deny":
-            v.denial_reasoning = str(result["reasoning"])
+            # deterministic fallback: even a leader result that slipped through
+            # with a missing/blank/non-string reasoning can never store one
+            reasoning = result.get("reasoning")
+            if not isinstance(reasoning, str) or not reasoning.strip():
+                reasoning = DENY_FALLBACK_REASONING
+            v.denial_reasoning = reasoning[:MAX_REASONING_CHARS]
             v.last_denied_at = str(datetime.now())
-            return {"decision": "denied", "reasoning": str(result["reasoning"])}
+            return {"decision": "denied", "reasoning": v.denial_reasoning}
 
         v.request_status = REQ_PENDING
         v.request_amount = u256(int(amount))

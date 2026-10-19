@@ -32,13 +32,22 @@ The contract uses `gl.vm.run_nondet_unsafe()` with a custom validator function. 
 Personal/treasury savings vaults, escrowed emergency funds, allowance-style wallets for teams or DAOs, and any custody arrangement where withdrawals should require justification against written rules plus an independent veto power — without trusting either party with permanent control.
 
 ## Verification
-- 13/13 direct-mode unit tests (creation guards, deposits, request guards, approve + fetched-content/justification regression, deny-leaves-funds-unchanged, unreachable-evidence deny without LLM, cooldown claim single payout, owner-only claim, veto bounds + 30-day force claim, vetoed re-request cycle, denial override time-gate/owner-only/consumes-denial/in-flight-precedence, views)
+- 15/15 direct-mode unit tests (creation guards, deposits, request guards, approve + fetched-content/justification regression, deny-leaves-funds-unchanged, unreachable-evidence deny without LLM, cooldown claim single payout, owner-only claim, veto bounds + 30-day force claim, vetoed re-request cycle, denial override time-gate/owner-only/consumes-denial/in-flight-precedence, **101 consecutive zero-value creations beyond the old 100-vault cap**, **blank/non-string/missing deny-reasoning falls back deterministically**, views)
 - `genvm-lint check` + validation pass (10 methods: 3 view, 7 write)
 - On-chain verified on studionet: payable creation + deposit, role/value guards, deterministic deny on unreachable evidence (reasoning + timestamp stored, funds unchanged), denial-override 30-day time gate, **real LLM consensus approval** with contract-fetched example.com evidence → `pending` + cooldown, claim time-gate before cooldown, guardian veto (non-guardian reverts), and force-claim / re-request / claim all time-gated while vetoed (balance untouched)
 
 ## Live Deployment
 Deployed on GenLayer studionet (chain `61999`):
-[`0xB99d6f2a82EC2E2535C5298AC5B93a1711E91bA8`](https://explorer-studio.genlayer.com/address/0xB99d6f2a82EC2E2535C5298AC5B93a1711E91bA8)
+[`0xfCFE1da1c83684E0abE304dAFF7F100903553699`](https://explorer-studio.genlayer.com/address/0xfCFE1da1c83684E0abE304dAFF7F100903553699)
 
 ## Source Code
 See `contracts/guarded_savings_vault.py`
+
+## Steward Request Response
+**Request**: (1) prevent one untrusted caller from exhausting the contract-wide vault capacity through free zero-value creations (remove the global cap or enforce non-exhaustible/per-owner allocation); (2) make every validator-accepted denial result safe for the committed deny branch by validating the required reasoning field or using a deterministic fallback. Provide matching submitted and deployed source.
+
+**Fix 1 — no exhaustible capacity**: the global `MAX_VAULTS = 100` cap and its `Vault limit reached` check were removed entirely; vault ids come from an unbounded monotonic counter (`v0`, `v1`, …), so there is no shared capacity for a single caller to squat with free zero-value creations. Regression test: 101 consecutive zero-value `create_vault` calls all succeed (`v0`–`v100`) and creation still works afterwards.
+
+**Fix 2 — deny branch is consensus-safe**: for `decision == "deny"` validators now additionally require the leader's `reasoning` to be a non-empty string no longer than `MAX_REASONING_CHARS` before accepting; `eval_fn` normalizes LLM output (non-string → empty → fallback) with the deterministic constant `DENY_FALLBACK_REASONING = "Denied by rules check."`; and the store path independently applies the same fallback + length cap, so even a leader result that slipped through with missing/blank/non-string reasoning can never store one. Tests cover blank, numeric, and missing reasoning fields.
+
+**Verified**: 15/15 direct-mode tests, `genvm-lint check` + validation pass (10 methods: 3 view, 7 write), re-deployed and re-verified on-chain (creation/deposit, role/value guards, unreachable-evidence deny, denial-override time gate, real LLM approval → pending + cooldown, claim time gate, guardian veto, bounded force claim). Submitted source matches the deployed source at the address above.

@@ -297,6 +297,49 @@ def test_vetoed_rerequest_fresh_approval_cycle(direct_vm, direct_deploy):
     assert v["balance"] == 950
 
 
+def test_no_contract_wide_vault_cap(direct_vm, direct_deploy):
+    """Steward: a fixed global capacity must not be exhaustible by one
+    untrusted caller through free zero-value creations."""
+    contract = direct_deploy("contracts/guarded_savings_vault.py")
+    owner = create_address("owner")
+    guardian = create_address("guardian")
+
+    for _ in range(101):
+        vid = _create(contract, direct_vm, owner, guardian, pot=0)
+    assert vid == "v100"
+    assert len(contract.get_all_vaults()) == 101
+    # creation still works afterwards
+    assert _create(contract, direct_vm, owner, guardian, pot=0) == "v101"
+
+
+def test_deny_reasoning_always_stored_non_empty(direct_vm, direct_deploy):
+    """Steward: every validator-accepted deny must commit a safe reasoning
+    field — blank or non-string leader output falls back deterministically."""
+    contract = direct_deploy("contracts/guarded_savings_vault.py")
+    owner = create_address("owner")
+    guardian = create_address("guardian")
+
+    vid = _create(contract, direct_vm, owner, guardian, pot=1000)
+
+    blank = json.dumps({"decision": "deny", "reasoning": "  "})
+    result = _request(contract, direct_vm, owner, vid, llm_json=blank)
+    assert result["decision"] == "denied"
+    assert contract.get_vault(vid)["denial_reasoning"] == "Denied by rules check."
+
+    non_string = json.dumps({"decision": "deny", "reasoning": 12345})
+    result = _request(contract, direct_vm, owner, vid, llm_json=non_string)
+    assert result["decision"] == "denied"
+    assert contract.get_vault(vid)["denial_reasoning"] == "Denied by rules check."
+
+    missing = json.dumps({"decision": "deny"})
+    result = _request(contract, direct_vm, owner, vid, llm_json=missing)
+    assert result["decision"] == "denied"
+    v = contract.get_vault(vid)
+    assert v["denial_reasoning"] == "Denied by rules check."
+    assert v["request_status"] == "none"
+    assert v["balance"] == 1000
+
+
 def test_views(direct_vm, direct_deploy):
     contract = direct_deploy("contracts/guarded_savings_vault.py")
     owner = create_address("owner")

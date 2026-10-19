@@ -7,9 +7,9 @@
 ![GenLayer](https://img.shields.io/badge/GenLayer-Intelligent%20Contract-6a4cff)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB)
 ![Status](https://img.shields.io/badge/status-live%20on%20studionet-2ea44f)
-![Tests](https://img.shields.io/badge/tests-13%20passed-2ea44f)
+![Tests](https://img.shields.io/badge/tests-15%20passed-2ea44f)
 
-[Live Contract](https://explorer-studio.genlayer.com/address/0xB99d6f2a82EC2E2535C5298AC5B93a1711E91bA8) ·
+[Live Contract](https://explorer-studio.genlayer.com/address/0xfCFE1da1c83684E0abE304dAFF7F100903553699) ·
 [GenLayer Docs](https://docs.genlayer.com)
 
 </div>
@@ -24,8 +24,8 @@ A savings account where someone else (a guardian) can block withdrawals is only 
 
 | | |
 |---|---|
-| **Contract** | [GuardedSavingsVault](https://explorer-studio.genlayer.com/address/0xB99d6f2a82EC2E2535C5298AC5B93a1711E91bA8) |
-| **Address** | `0xB99d6f2a82EC2E2535C5298AC5B93a1711E91bA8` |
+| **Contract** | [GuardedSavingsVault](https://explorer-studio.genlayer.com/address/0xfCFE1da1c83684E0abE304dAFF7F100903553699) |
+| **Address** | `0xfCFE1da1c83684E0abE304dAFF7F100903553699` |
 | **Network** | GenLayer studionet (chain `61999`) |
 | **Status** | ✅ deployed + verified on-chain |
 
@@ -36,6 +36,7 @@ A savings account where someone else (a guardian) can block withdrawals is only 
 - ⏱️ **Cooldown, not custody** — an approved request pays out after a 7-day cooldown; if the guardian never acts, the owner claims anyway — no party can stall forever
 - 🔁 **Deny is feedback, not a lock** — a denied request changes no funds (only stores the denial reasoning + timestamp); the owner retries with better justification, re-requests 7 days after a veto, or — if the rules check never approves (unmeetable rules, dead evidence site) — `override_denial` 30 days after the last denial
 - 🔒 **Immutable once funded** — guardian and rules can never be changed; one in-flight request per vault; balance checked at request time and again at claim time; claims are status-flipped before transfer (exactly one payout per request)
+- 🧱 **No exhaustible capacity** — there is deliberately no contract-wide vault cap (vault ids come from an unbounded monotonic counter): a single untrusted caller cannot squat the global capacity with free zero-value creations
 
 ## How It Works
 
@@ -74,17 +75,19 @@ request_withdrawal (owner: amount + justification + evidence URL)
 ## Security Model
 
 - **No permanent lock, by construction**: every state has a time-bounded exit — `pending → claim` (7d cooldown, owner), `vetoed → force_claim` (30d, owner, no guardian needed), `vetoed → re-request` (7d, fresh consensus), `denied → override_denial` (30d after the last denial, and each override consumes that denial); a veto or denial can only delay ≤ 30 days
+- **No contract-wide capacity to exhaust**: no global vault cap exists — vault ids come from an unbounded monotonic counter, so a single caller's free zero-value creations cannot squat a shared resource
 - **Guardian cannot rug**: veto is a non-money state transition (no funds move); guardian and rules are immutable and set at creation; the guardian cannot initiate, redirect, or claim funds
 - **Compromised owner is bounded**: requests require contract-fetched evidence passing rules consensus, then a 7-day cooldown + guardian veto window = detection/recovery time
 - **Exactly one payout per request**: status flip (`claimed`) before the transfer; balance re-checked at every payout; `claim_withdraw`, `force_claim`, and `override_denial` are mutually exclusive by status and each consumes its own trigger; replays hit `No pending/No vetoed/No denial`
-- **Prompt-injection hardening**: fetched evidence is fenced and marked untrusted; validators must reach the same `approve`/`deny` decision after their own independent fetch + rules check
+- **Prompt-injection hardening**: fetched evidence *and* the owner's justification are fenced and marked untrusted; validators must reach the same `approve`/`deny` decision after their own independent fetch + rules check
+- **Denial reasoning is consensus-safe**: the deny branch commits the leader's reasoning, so validators require it to be a non-empty, length-bounded string before accepting, and the contract additionally applies a deterministic fallback (`Denied by rules check.`) if a stored reasoning is ever missing, blank, or non-string
 - **Denial never moves funds**: LLM `deny` (or unreachable evidence) stores reasoning + timestamp only; the withdrawal request itself is never consumed by a denial, and the owner's bypass path after a denial costs a full 30-day wait (same bound as a guardian veto)
 - Full input validation (address, justification, URL and length caps, amount ≤ balance at request, claim, and override)
 
 ## Test
 
 ```bash
-gltest tests/ -q   # 13 passed
+gltest tests/ -q   # 15 passed
 ```
 
 ## Lint
